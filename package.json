@@ -1,0 +1,11 @@
+{
+  "name": "dvc-liveish-checker",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node checker.js"
+  },
+  "dependencies": {
+    "node-cron": "^3.0.3"
+  }
+}
