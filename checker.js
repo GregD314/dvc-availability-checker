@@ -17,6 +17,9 @@ const INGEST_SECRET =
 const PROVIDER_SLUG =
   process.env.PROVIDER_SLUG || "official-dvc-checker";
 
+const EXPORT_BATCH_SIZE = Number(process.env.EXPORT_BATCH_SIZE || 1000);
+const MAX_BATCH_LOOPS = Number(process.env.MAX_BATCH_LOOPS || 20);
+
 function normalize(text) {
   return (text || "").toLowerCase().replace(/\s+/g, " ").trim();
 }
@@ -48,18 +51,19 @@ async function postJson(url, body) {
   return data;
 }
 
-async function getQueue() {
+async function getQueue(limit = EXPORT_BATCH_SIZE) {
   return await postJson(BASE44_EXPORT_URL, {
     secret: QUEUE_SECRET,
-    provider_slug: PROVIDER_SLUG
+    provider_slug: PROVIDER_SLUG,
+    limit
   });
 }
 
-async function sendResult(result) {
+async function sendResults(results) {
   return await postJson(BASE44_INGEST_URL, {
     secret: INGEST_SECRET,
     provider_slug: PROVIDER_SLUG,
-    results: [result]
+    results
   });
 }
 
@@ -198,16 +202,10 @@ async function checkBroker(item) {
   };
 }
 
-async function runCrawler() {
-  console.log("Starting nightly crawl");
+async function processOneBatch(batchNumber) {
+  console.log(`Starting batch ${batchNumber}`);
 
-  let queue;
-  try {
-    queue = await getQueue();
-  } catch (err) {
-    console.error("Failed to fetch queue:", err.message);
-    return;
-  }
+  const queue = await getQueue(EXPORT_BATCH_SIZE);
 
   const items =
     queue?.data?.queue_items ||
@@ -220,11 +218,10 @@ async function runCrawler() {
   if (queue?.data && typeof queue.data === "object") {
     console.log("Queue response data keys:", Object.keys(queue.data));
   }
-  console.log("Items found:", items.length);
+  console.log(`Items found in batch ${batchNumber}:`, items.length);
 
   if (items.length === 0) {
-    console.log("Nothing to check");
-    return;
+    return 0;
   }
 
   for (const item of items) {
@@ -233,14 +230,34 @@ async function runCrawler() {
       console.log(
         `Checked ${item.resort_name} | ${item.room_type_name} | ${item.check_in_date} -> ${result.status}`
       );
-      await sendResult(result);
+      await sendResults([result]);
       await sleep(250);
     } catch (err) {
       console.error(`Queue item failed: ${item.queue_item_id} | ${err.message}`);
     }
   }
 
-  console.log("Nightly crawl finished");
+  console.log(`Finished batch ${batchNumber}`);
+  return items.length;
+}
+
+async function runCrawler() {
+  console.log("Starting nightly crawl");
+
+  let totalProcessed = 0;
+
+  for (let i = 1; i <= MAX_BATCH_LOOPS; i++) {
+    const count = await processOneBatch(i);
+
+    if (count === 0) {
+      console.log(`No more items found after batch ${i}.`);
+      break;
+    }
+
+    totalProcessed += count;
+  }
+
+  console.log(`Nightly crawl finished. Total processed: ${totalProcessed}`);
 }
 
 runCrawler()
