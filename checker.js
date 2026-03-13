@@ -1,5 +1,3 @@
-import cron from "node-cron";
-
 const BASE44_EXPORT_URL =
   process.env.QUEUE_EXPORT_URL ||
   "https://dvc365.base44.app/functions/exportAvailabilityCheckQueue";
@@ -7,10 +5,6 @@ const BASE44_EXPORT_URL =
 const BASE44_INGEST_URL =
   process.env.INGEST_URL ||
   "https://dvc365.base44.app/functions/ingestAvailabilityCheck";
-
-const BASE44_MARK_FAILED_URL =
-  process.env.MARK_FAILED_URL ||
-  "https://dvc365.base44.app/functions/markQueueItemFailed";
 
 const QUEUE_SECRET =
   process.env.QUEUE_SECRET ||
@@ -22,8 +16,6 @@ const INGEST_SECRET =
 
 const PROVIDER_SLUG =
   process.env.PROVIDER_SLUG || "official-dvc-checker";
-
-// ---------- helpers ----------
 
 function normalize(text) {
   return (text || "").toLowerCase().replace(/\s+/g, " ").trim();
@@ -56,15 +48,11 @@ async function postJson(url, body) {
   return data;
 }
 
-// ---------- Base44 calls ----------
-
 async function getQueue() {
-  const queue = await postJson(BASE44_EXPORT_URL, {
+  return await postJson(BASE44_EXPORT_URL, {
     secret: QUEUE_SECRET,
     provider_slug: PROVIDER_SLUG
   });
-
-  return queue;
 }
 
 async function sendResult(result) {
@@ -75,25 +63,14 @@ async function sendResult(result) {
   });
 }
 
-async function markFailed(queueItemId, errorMessage) {
-  try {
-    await postJson(BASE44_MARK_FAILED_URL, {
-      queue_item_id: queueItemId,
-      error_message: errorMessage
-    });
-  } catch (err) {
-    console.error("Could not mark failed item:", queueItemId, err.message);
-  }
-}
-
-// ---------- broker mappings ----------
-
 const BROKER_RESORT_NAMES = {
+  "Animal Kingdom Villas": "Animal Kingdom Villas - Jambo House,Animal Kingdom Villas - Kidani Village",
   "Animal Kingdom Villas - Jambo House": "Animal Kingdom Villas - Jambo House",
   "Animal Kingdom Villas - Kidani Village": "Animal Kingdom Villas - Kidani Village",
   "Bay Lake Tower": "Bay Lake Tower",
   "Beach Club Villas": "Beach Club Villas",
   "BoardWalk Villas": "Boardwalk Villas",
+  "Boardwalk Villas": "Boardwalk Villas",
   "Boulder Ridge Villas": "Boulder Ridge",
   "Copper Creek Villas & Cabins": "Copper Creek",
   "Grand Floridian Villas": "Grand Floridian Resort",
@@ -166,13 +143,11 @@ function buildBrokerUrl(item) {
 
 function extractStatusFromHtml(html, item) {
   const htmlLower = normalize(html);
-  const resortNeedle = normalize(BROKER_RESORT_NAMES[item.resort_name] || item.resort_name);
   const patterns = roomTypePatterns(item.room_type_name);
 
-  const hasResort = htmlLower.includes(resortNeedle);
   const hasRoomType = patterns.some((p) => htmlLower.includes(normalize(p)));
 
-  if (!hasResort || !hasRoomType) {
+  if (!hasRoomType) {
     return "unavailable";
   }
 
@@ -186,8 +161,6 @@ function extractStatusFromHtml(html, item) {
 
   return "available";
 }
-
-// ---------- broker checker ----------
 
 async function checkBroker(item) {
   const url = buildBrokerUrl(item);
@@ -225,8 +198,6 @@ async function checkBroker(item) {
   };
 }
 
-// ---------- main runner ----------
-
 async function runCrawler() {
   console.log("Starting nightly crawl");
 
@@ -263,28 +234,20 @@ async function runCrawler() {
         `Checked ${item.resort_name} | ${item.room_type_name} | ${item.check_in_date} -> ${result.status}`
       );
       await sendResult(result);
-
-      // tiny pause so we do not hammer the broker site
       await sleep(250);
     } catch (err) {
-      console.error(`Failed queue item ${item.queue_item_id}:`, err.message);
-      await markFailed(item.queue_item_id, err.message);
+      console.error(`Queue item failed: ${item.queue_item_id} | ${err.message}`);
     }
   }
 
   console.log("Nightly crawl finished");
 }
 
-// Run once immediately
-runCrawler().catch((err) => {
-  console.error("Fatal crawler error:", err.message);
-});
-
-// Also keep the 15-minute schedule
-cron.schedule("*/15 * * * *", async () => {
-  try {
-    await runCrawler();
-  } catch (err) {
-    console.error("Scheduled run failed:", err.message);
-  }
-});
+runCrawler()
+  .then(() => {
+    process.exit(0);
+  })
+  .catch((err) => {
+    console.error("Fatal crawler error:", err.message);
+    process.exit(1);
+  });
